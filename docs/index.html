@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Java 学习打卡 · 每天进步一点点</title>
+<link rel="icon" href="favicon.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- 左侧导航栏 -->
+<nav class="sidebar" id="sidebar">
+  <div class="sb-header">
+    <span class="sb-brand">☕ 学习路线</span>
+    <button class="sb-close" id="sbClose" title="收起导航">✕</button>
+  </div>
+  <div class="sb-body" id="sbBody"></div>
+</nav>
+<button class="sb-toggle" id="sbToggle" title="展开导航">☰</button>
+
+<header class="topbar">
+  <div class="brand">☕ Java 学习打卡</div>
+  <div class="today-line" id="todayLine"></div>
+</header>
+
+<main class="wrap">
+
+  <!-- 仪表盘 -->
+  <section class="card dash">
+    <div class="ring-box">
+      <svg viewBox="0 0 120 120" width="120" height="120" aria-hidden="true">
+        <circle class="ring-bg" cx="60" cy="60" r="52"/>
+        <circle class="ring-fg" id="ringFg" cx="60" cy="60" r="52"/>
+      </svg>
+      <div class="ring-center"><b id="ringNum">0</b><span id="ringDen">/ 28</span><em>今日打卡</em></div>
+    </div>
+    <div class="dash-main">
+      <h1 id="greeting">加载中…</h1>
+      <div class="stat-chips">
+        <span class="chip">🔥 连续打卡 <b id="stStreak">0</b> 天</span>
+        <span class="chip">📅 累计坚持 <b id="stActive">0</b> 天</span>
+        <span class="chip">✅ 累计打卡 <b id="stTotal">0</b> 次</span>
+        <span class="chip">🚀 开始于 <b id="stFirst">—</b></span>
+      </div>
+      <div class="heatmap" id="heatmap"></div>
+      <div class="heatmap-cap">近 4 周 · 每天完成的学习项数量</div>
+      <div class="quote" id="dailyQuote"></div>
+
+      <!-- 周报 + 番茄钟 + 导出导入 -->
+      <div class="dash-extras">
+        <div class="dash-extra-card">
+          <h3>📊 本周完成</h3>
+          <div class="week-bars" id="weekBars"></div>
+          <div class="week-labels" id="weekLabels" style="display:flex;gap:4px;margin-top:4px"></div>
+          <div class="week-summary" id="weekSummary"></div>
+        </div>
+        <div class="dash-extra-card">
+          <h3>🍅 番茄钟</h3>
+          <div class="pomo-display" id="pomoTime">25:00</div>
+          <div class="pomo-label" id="pomoLabel">选择时长后开始</div>
+          <div class="pomo-btns">
+            <button class="pomo-btn" data-min="15">15分</button>
+            <button class="pomo-btn" data-min="25" style="background:var(--blue-soft);border-color:var(--blue);color:var(--blue-deep)">25分</button>
+            <button class="pomo-btn" data-min="30">30分</button>
+            <button class="pomo-btn" data-min="45">45分</button>
+          </div>
+          <div class="pomo-btns" style="margin-top:6px">
+            <button class="pomo-btn primary" id="pomoStart">▶ 开始</button>
+            <button class="pomo-btn" id="pomoPause" disabled>⏸ 暂停</button>
+            <button class="pomo-btn danger" id="pomoReset">↻ 重置</button>
+          </div>
+        </div>
+        <div class="dash-extra-card">
+          <h3>⏱️ 学习计时器</h3>
+          <div class="timer-display" id="timerDisplay">00:00:00</div>
+          <div class="timer-label" id="timerLabel">点击开始记录学习时间</div>
+          <div class="pomo-btns" style="margin-top:8px">
+            <button class="pomo-btn primary" id="timerStart">▶ 开始学习</button>
+            <button class="pomo-btn danger" id="timerStop" disabled>⏹ 结束学习</button>
+          </div>
+          <div class="timer-today" id="timerToday">今日学习: 0 小时 0 分</div>
+        </div>
+        <div class="dash-extra-card">
+          <h3>💾 数据管理</h3>
+          <div class="io-btns">
+            <button class="io-btn primary" id="exportBtn">📤 导出备份</button>
+            <button class="io-btn" id="importBtn">📥 导入恢复</button>
+            <input type="file" id="importFile" accept=".json" style="display:none">
+            <div style="font-size:11px;color:var(--muted);margin-top:4px">导出 JSON 文件可备份所有打卡记录</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 20 周计划进度 -->
+  <section class="card tl-card">
+    <div class="tl-head">
+      <div class="tl-title">🗓️ 20 周计划进度 <span class="tl-status" id="tlStatus"></span></div>
+      <label class="tl-start">开始日期
+        <input type="date" id="startDateInput" title="修改后自动保存，各阶段截止日期会随之重新计算">
+      </label>
+    </div>
+    <div class="tl-bar" id="tlBar"></div>
+    <div class="tl-meta" id="tlMeta"></div>
+    <div class="tl-stages" id="tlStages"></div>
+    <div class="quick">
+      <button class="quick-btn" id="algoToggle" type="button">🧮 算法练习 ▾</button>
+      <a class="quick-btn ghost" href="https://github.com/" target="_blank" rel="noopener">🐙 打开 GitHub</a>
+    </div>
+    <div class="links-panel big" id="algoPanel" hidden>
+      <a class="link-chip" href="https://leetcode.cn/problemset/" target="_blank" rel="noopener">🟨 力扣 · 题库</a>
+      <a class="link-chip" href="https://leetcode.cn/studyplan/top-100-liked/" target="_blank" rel="noopener">🔥 力扣 · Hot 100</a>
+      <a class="link-chip" href="https://www.nowcoder.com/exam/oj" target="_blank" rel="noopener">🐮 牛客 · 在线编程</a>
+      <a class="link-chip" href="https://github.com/TheAlgorithms/Java" target="_blank" rel="noopener">🐙 GitHub · Java 算法实现</a>
+      <a class="link-chip" href="https://github.com/doocs/leetcode" target="_blank" rel="noopener">🐙 GitHub · 高质量题解</a>
+    </div>
+  </section>
+
+  <!-- 阶段与打卡项 -->
+  <div id="stages"></div>
+
+  <!-- 学习统计 -->
+  <section class="stats-section">
+    <div class="card">
+      <div class="stats-header">
+        <h3>📊 每次学习时长（今日）</h3>
+      </div>
+      <canvas id="barChart" height="220"></canvas>
+      <div class="stats-summary" id="barSummary"></div>
+    </div>
+    <div class="card">
+      <div class="stats-header">
+        <h3>📈 每日学习时长</h3>
+        <div class="stats-nav">
+          <button id="monthPrev">‹</button>
+          <span id="monthLabel">2026 年 9 月</span>
+          <button id="monthNext">›</button>
+        </div>
+      </div>
+      <canvas id="lineChart" height="220"></canvas>
+      <div class="stats-summary" id="lineSummary"></div>
+    </div>
+  </section>
+
+  <!-- 资源与建议 -->
+  <section class="card extra">
+    <div class="extra-grid">
+      <div>
+        <h3>📚 推荐学习资源</h3>
+        <ul class="res-list">
+          <li><b>B 站</b> 尚硅谷、黑马程序员 —— 系统视频课</li>
+          <li><b>掘金 / 知乎</b> 高质量技术文章</li>
+          <li><a href="https://javaguide.cn/" target="_blank" rel="noopener"><b>JavaGuide</b></a> 面试知识库</li>
+          <li><a href="https://leetcode.cn/" target="_blank" rel="noopener"><b>力扣 LeetCode</b></a> ·
+              <a href="https://www.nowcoder.com/" target="_blank" rel="noopener"><b>牛客网</b></a> 算法刷题</li>
+          <li><a href="https://github.com/" target="_blank" rel="noopener"><b>GitHub</b></a> ·
+              <a href="https://gitee.com/" target="_blank" rel="noopener"><b>Gitee</b></a> 代码托管</li>
+          <li><a href="https://xiaolincoding.com/" target="_blank" rel="noopener"><b>小林 coding</b></a> 图解网络 / MySQL</li>
+          <li><b>书籍</b> 《Java 核心技术》《深入理解 JVM》《Java 并发编程实战》</li>
+        </ul>
+      </div>
+      <div>
+        <h3>💡 关键行动建议</h3>
+        <ol class="advice-list">
+          <li>每天代码上传 GitHub，保持活跃，简历加分。</li>
+          <li>算法从今天开始刷，每天 1 题，坚持到面试。</li>
+          <li>不要只看视频，每学一个知识点必须独立写代码验证。</li>
+          <li>项目一定要亲手做，至少有一个功能是自己设计的，能讲清楚。</li>
+          <li>善用 AI 答疑，但不要依赖，先自己思考。</li>
+          <li>保持健康，每周运动，避免久坐。</li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <footer class="foot">坚持每天进步，寒假实习可期 ☁️ · 数据保存在本地 data 文件夹，可随时备份</footer>
+</main>
+
+<!-- 打卡详情弹窗 -->
+<div class="modal-mask" id="modalMask" hidden>
+  <div class="modal" id="modalBox" role="dialog" aria-modal="true"></div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+<div id="confettiLayer" aria-hidden="true"></div>
+<script src="app.js"></script>
+</body>
+</html>
