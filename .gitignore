@@ -1,0 +1,6 @@
+data/
+bin/
+*.class
+server.log
+PLAN-*.md
+PROGRESS.md
