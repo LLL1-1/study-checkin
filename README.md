@@ -42,6 +42,7 @@ java -cp bin com.study.CheckinApp 8080
 
 - 打卡记录：`data/checkins.csv`（每行 `学习项,日期`，纯文本，可直接备份或手动编辑）
 - 开始日期：`data/config.csv`
+- 在线版数据：`data/state.json`（GitHub 云端同步用，包含打卡记录 + 学习会话）
 - 重置全部数据：停止服务后删除 `data` 文件夹即可，下次启动自动重建
 
 ## 🗂 目录结构
@@ -56,6 +57,23 @@ study-checkin/
 ├─ public/                 前端（index.html / style.css / app.js / favicon.svg）
 └─ data/                   运行时自动生成的打卡数据
 ```
+
+## ☁️ GitHub 云端同步（在线版）
+
+在线版支持通过 GitHub API 将打卡数据保存到仓库的 `data/state.json`，实现跨设备、跨浏览器数据同步。
+
+**使用方法：**
+1. 打开在线版 → 点击 💾 数据管理 区域的「🔑 GitHub 同步」按钮
+2. 在 GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic) 生成一个 Token
+3. 勾选 `repo` 权限，复制 Token 粘贴到弹窗中保存
+4. 之后所有打卡、计时、修改开始日期的操作都会自动同步到 GitHub
+
+**原理：**
+- 读取：通过 GitHub Contents API 读取 `data/state.json`
+- 写入：通过 GitHub Contents API 更新文件（需要 Token 认证）
+- Token 仅存储在浏览器 localStorage 中，不会上传到任何服务器
+
+**注意：** Token 仅需 `repo` 权限（或 fine-grained token 的 `Contents: Read and write` 权限），建议仅对该仓库授权。
 
 ## 🔌 API 一览（本地）
 
