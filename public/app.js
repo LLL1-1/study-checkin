@@ -4,10 +4,157 @@
 let DATA = null;
 let cal = null;
 let stageById = {}, itemById = {}, itemStage = {}, colorById = {}, tlStageById = {};
-let collapsedStages = new Set(); // 手动折叠的阶段
-
+let collapsedStages = new Set();
+const OFFLINE = location.hostname === '' || location.hostname === 'localhost' ? false : true;
+const LS_KEY = 'study_checkin_data';
 const $ = s => document.querySelector(s);
 const RING_C = 326.7;
+
+/* ============ GitHub 后端 ============ */
+const GH_OWNER = 'LLL1-1', GH_REPO = 'study-checkin', GH_FILE = 'data/state.json';
+let ghToken = localStorage.getItem('gh_token') || '';
+let ghReady = false;
+
+function getGhToken() { return ghToken; }
+function setGhToken(t) { ghToken = t; localStorage.setItem('gh_token', t); }
+function clearGhToken() { ghToken = ''; localStorage.removeItem('gh_token'); }
+
+async function ghRead() {
+  const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${GH_FILE}`;
+  const headers = { 'Accept': 'application/vnd.github.v3+json' };
+  if (ghToken) headers['Authorization'] = 'token ' + ghToken;
+  const r = await fetch(url, { headers });
+  if (!r.ok) throw new Error('GitHub read failed: ' + r.status);
+  const j = await r.json();
+  const content = atob(j.content.replace(/\n/g, ''));
+  return { state: JSON.parse(content), sha: j.sha };
+}
+
+async function ghWrite(state, sha, msg) {
+  const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${GH_FILE}`;
+  const body = { message: msg, content: btoa(unescape(encodeURIComponent(JSON.stringify(state, null, 2)))), sha };
+  if (ghToken) body.branch = 'main';
+  const r = await fetch(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'token ' + ghToken },
+    body: JSON.stringify(body)
+  });
+  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.message || r.status); }
+  return (await r.json()).content.sha;
+}
+
+async function ghLoad() {
+  if (!ghToken) return null;
+  try {
+    const { state, sha } = await ghRead();
+    ghReady = true;
+    localStorage.setItem('gh_sha', sha);
+    return state;
+  } catch (e) {
+    console.warn('[GitHub] 读取失败:', e.message);
+    if (e.message.includes('401') || e.message.includes('403')) {
+      toast('⚠️ Token 无效或已过期，请重新配置'); clearGhToken();
+    }
+    return null;
+  }
+}
+
+async function ghSave(state) {
+  if (!ghReady || !ghToken) return;
+  try {
+    const sha = localStorage.getItem('gh_sha') || '';
+    const newSha = await ghWrite(state, sha, '📊 更新打卡数据 ' + new Date().toISOString().slice(0, 16));
+    localStorage.setItem('gh_sha', newSha);
+  } catch (e) {
+    console.warn('[GitHub] 保存失败:', e.message);
+    toast('⚠️ 数据同步失败: ' + e.message);
+  }
+}
+
+/* ============ Token 配置弹窗 ============ */
+function showTokenModal() {
+  const mask = document.createElement('div');
+  mask.className = 'modal-mask'; mask.id = 'tokenMask';
+  mask.innerHTML = `<div class="modal" style="max-width:440px;padding:24px">
+    <h3 style="margin:0 0 12px">🔑 配置 GitHub Token</h3>
+    <p style="font-size:13px;color:var(--muted);margin:0 0 12px">
+      配置后打卡数据将保存到 GitHub，跨设备同步不丢失。<br>
+      <b>生成 Token：</b>GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token<br>
+      勾选 <code>repo</code> 权限，复制生成的 Token 粘贴到下方。
+    </p>
+    <input id="tokenInput" type="password" placeholder="ghp_xxxxxxxxxxxx"
+      style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;box-sizing:border-box"
+      value="${ghToken}">
+    <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end">
+      <button class="io-btn" id="tokenClear" ${!ghToken ? 'style="display:none"' : ''}>清除 Token</button>
+      <button class="io-btn" id="tokenCancel">取消</button>
+      <button class="io-btn primary" id="tokenSave">保存</button>
+    </div>
+    <div id="tokenMsg" style="font-size:12px;margin-top:8px;color:var(--green)"></div>
+  </div>`;
+  document.body.appendChild(mask);
+  document.body.style.overflow = 'hidden';
+  const close = () => { mask.remove(); document.body.style.overflow = ''; };
+  mask.addEventListener('click', e => { if (e.target === mask) close(); });
+  document.getElementById('tokenCancel').onclick = close;
+  document.getElementById('tokenClear').onclick = () => { clearGhToken(); toast('Token 已清除'); close(); load(); };
+  document.getElementById('tokenSave').onclick = async () => {
+    const v = document.getElementById('tokenInput').value.trim();
+    if (!v) { toast('请输入 Token'); return; }
+    setGhToken(v);
+    document.getElementById('tokenMsg').textContent = '验证中...';
+    const state = await ghLoad();
+    if (state) {
+      document.getElementById('tokenMsg').textContent = '✅ 验证成功，数据已同步！';
+      setTimeout(() => { close(); load(); }, 800);
+    } else {
+      document.getElementById('tokenMsg').textContent = '❌ Token 无效或仓库权限不足';
+      document.getElementById('tokenMsg').style.color = '#dc3545';
+    }
+  };
+}
+
+// 内嵌路线图数据（离线模式用）
+const STAGES_DATA = [
+  {id:"s1",name:"Java 基础巩固",weeks:"第 1~4 周",icon:"🌱",color:"#5B8DEF",goal:"基础语法熟练，GitHub 有持续提交记录",items:[
+    {id:"s1-syntax",name:"Java 语法与流程控制",detail:"顺序、分支、循环与方法定义，每个知识点独立写代码验证",badge:"基础",links:[]},
+    {id:"s1-oop",name:"面向对象",detail:"封装、继承、多态、接口、内部类",badge:"基础",links:[]},
+    {id:"s1-api",name:"常用 API",detail:"String、StringBuilder、ArrayList 等常用类的使用",badge:"基础",links:[]},
+    {id:"s1-game",name:"综合游戏项目",detail:"完成黑马阶段项目，理解完整程序结构",badge:"项目",links:[]},
+    {id:"s1-leetcode",name:"LeetCode 简单题",detail:"从数组、字符串开始，每天 1 题，坚持到面试",badge:"每日",links:[{label:"力扣 · 题库",url:"https://leetcode.cn/problemset/"},{label:"牛客 · 在线编程",url:"https://www.nowcoder.com/exam/oj"},{label:"GitHub · Java 算法实现",url:"https://github.com/TheAlgorithms/Java"},{label:"GitHub · 高质量题解",url:"https://github.com/doocs/leetcode"}]},
+    {id:"s1-git",name:"Git & GitHub",detail:"基本操作 + 每天 push 代码，保持 GitHub 活跃",badge:"每日",links:[{label:"GitHub",url:"https://github.com/"},{label:"GitHub 快速入门",url:"https://docs.github.com/zh/get-started"}]},
+    {id:"s1-collection",name:"集合框架深入",detail:"HashMap、HashSet、LinkedList 原理与使用",badge:"P1",links:[]}
+  ]},
+  {id:"s2",name:"数据库 + 网络",weeks:"第 5~8 周",icon:"🗄️",color:"#3FB0D0",goal:"能独立设计数据库表，理解网络请求流程",items:[
+    {id:"s2-mysql",name:"MySQL 核心",detail:"SQL、索引、事务、锁、优化",badge:"P7",links:[{label:"小林 coding · MySQL",url:"https://xiaolincoding.com/mysql/"}]},
+    {id:"s2-jdbc",name:"JDBC",detail:"连接数据库，把阶段项目数据持久化",badge:"穿插",links:[]},
+    {id:"s2-redis",name:"Redis 入门",detail:"缓存概念、5 大基本数据类型",badge:"P11",links:[]},
+    {id:"s2-net",name:"计算机网络",detail:"HTTP、TCP、HTTPS，理解一次网络请求的完整流程",badge:"P8",links:[{label:"小林 coding · 图解网络",url:"https://xiaolincoding.com/"}]}
+  ]},
+  {id:"s3",name:"Java 进阶 + 框架",weeks:"第 9~12 周",icon:"🚀",color:"#3FB984",goal:"能用 Spring Boot 搭建 RESTful 接口",items:[
+    {id:"s3-generics",name:"异常处理与泛型",detail:"异常体系、自定义异常、泛型上下界与通配符",badge:"P2",links:[]},
+    {id:"s3-io",name:"IO 与 NIO",detail:"字节/字符流、缓冲流、序列化、NIO",badge:"P3",links:[]},
+    {id:"s3-concurrent",name:"多线程与并发",detail:"线程池、锁、volatile、ThreadLocal",badge:"P4",links:[]},
+    {id:"s3-jvm",name:"JVM",detail:"内存区域、类加载机制、GC 基础",badge:"核心",links:[]},
+    {id:"s3-reflect",name:"注解与反射",detail:"元注解、自定义注解、反射调用",badge:"P5",links:[]},
+    {id:"s3-java8",name:"Java 8 新特性",detail:"Lambda、Stream、Optional、函数式接口",badge:"P6",links:[]},
+    {id:"s3-springboot",name:"Spring Boot",detail:"IoC/DI、注解开发、快速搭建 RESTful 接口",badge:"P10",links:[{label:"Spring 官方文档",url:"https://spring.io/projects/spring-boot"}]},
+    {id:"s3-mybatis",name:"MyBatis",detail:"ORM 映射、动态 SQL",badge:"P10",links:[]},
+    {id:"s3-os",name:"操作系统",detail:"进程/线程、内存、IO 模型",badge:"P9",links:[]}
+  ]},
+  {id:"s4",name:"项目实战",weeks:"第 13~16 周",icon:"🛠️",color:"#F0975B",goal:"有一个可展示的完整项目，能讲清技术选型",items:[
+    {id:"s4-design",name:"项目设计与选型",detail:"需求分析、库表设计、技术选型",badge:"实战",links:[]},
+    {id:"s4-dev",name:"核心功能开发",detail:"亲手完成完整项目",badge:"实战",links:[]},
+    {id:"s4-middleware",name:"中间件集成",detail:"集成 MySQL、Redis、MQ",badge:"P12",links:[]},
+    {id:"s4-deploy",name:"部署与开源",detail:"项目部署上线，代码上传 GitHub",badge:"实战",links:[{label:"GitHub",url:"https://github.com/"}]}
+  ]},
+  {id:"s5",name:"面试冲刺",weeks:"第 17~20 周",icon:"🎯",color:"#E8798F",goal:"拿到实习 offer",items:[
+    {id:"s5-questions",name:"八股文刷题",detail:"JavaGuide、advanced-java 高频面试题",badge:"冲刺",links:[{label:"JavaGuide",url:"https://javaguide.cn/"},{label:"GitHub · advanced-java",url:"https://github.com/doocs/advanced-java"}]},
+    {id:"s5-algo",name:"算法突击",detail:"高频题型分类刷",badge:"P15",links:[{label:"力扣 · 题库",url:"https://leetcode.cn/problemset/"},{label:"牛客 · 在线编程",url:"https://www.nowcoder.com/exam/oj"},{label:"GitHub · Java 算法实现",url:"https://github.com/TheAlgorithms/Java"},{label:"GitHub · 高质量题解",url:"https://github.com/doocs/leetcode"}]},
+    {id:"s5-mock",name:"模拟面试",detail:"自我提问 + AI/同学模拟面试",badge:"冲刺",links:[]},
+    {id:"s5-resume",name:"简历与投递",detail:"打磨简历、投递寒假实习岗位",badge:"冲刺",links:[]}
+  ]}
+];
 
 const QUOTES = [
   '每天代码上传 GitHub，保持活跃，简历加分。',
@@ -36,8 +183,17 @@ function badgeCls(b) {
 
 /* ============ 数据加载 ============ */
 async function load() {
-  const r = await fetch('/api/data');
-  DATA = await r.json();
+  if (OFFLINE) {
+    // GitHub Pages 离线模式：直接用 localStorage
+    DATA = buildOfflineData();
+  } else {
+    try {
+      const r = await fetch('/api/data');
+      DATA = await r.json();
+    } catch (e) {
+      DATA = buildOfflineData();
+    }
+  }
   stageById = {}; itemById = {}; itemStage = {}; colorById = {}; tlStageById = {};
   DATA.stages.forEach(st => {
     stageById[st.id] = st;
@@ -45,6 +201,156 @@ async function load() {
   });
   (DATA.timeline && DATA.timeline.stages || []).forEach(t => tlStageById[t.id] = t);
   render();
+}
+
+function buildOfflineData() {
+  const today = new Date().toISOString().slice(0, 10);
+  const saved = loadFromLS();
+  const startDate = saved.startDate || today;
+  const checkins = saved.checkins || {};
+  const stages = STAGES_DATA.map(st => ({
+    ...st,
+    items: st.items.map(it => {
+      const dates = checkins[it.id] || [];
+      const dateSet = new Set(dates);
+      const todayDone = dateSet.has(today);
+      const total = dates.length;
+      // streak
+      let streak = 0;
+      let d = new Date(today + 'T00:00:00');
+      if (!todayDone) d.setDate(d.getDate() - 1);
+      while (dateSet.has(d.toISOString().slice(0, 10))) { streak++; d.setDate(d.getDate() - 1); }
+      return {
+        id: it.id, name: it.name, detail: it.detail, badge: it.badge,
+        links: it.links || [],
+        stats: { total, streak, last: dates.length ? dates[dates.length - 1] : null, today: todayDone, dates }
+      };
+    })
+  }));
+  const totalItems = stages.reduce((a, s) => a + s.items.length, 0);
+  const todayDone = stages.reduce((a, s) => a + s.items.filter(i => i.stats.today).length, 0);
+  const allDates = new Set();
+  let totalRecords = 0;
+  stages.forEach(s => s.items.forEach(i => { i.stats.dates.forEach(d => allDates.add(d)); totalRecords += i.stats.total; }));
+  let streak = 0;
+  { let d = new Date(today + 'T00:00:00');
+    if (!allDates.has(today)) d.setDate(d.getDate() - 1);
+    while (allDates.has(d.toISOString().slice(0, 10))) { streak++; d.setDate(d.getDate() - 1); }
+  }
+  const daily = [];
+  for (let i = 27; i >= 0; i--) {
+    const d = new Date(today + 'T00:00:00');
+    d.setDate(d.getDate() - i);
+    const ds = d.toISOString().slice(0, 10);
+    let count = 0;
+    stages.forEach(s => s.items.forEach(it => { if (it.stats.dates.includes(ds)) count++; }));
+    daily.push({ date: ds, count });
+  }
+  // timeline
+  const sd = new Date(startDate + 'T00:00:00');
+  const ed = new Date(sd); ed.setDate(ed.getDate() + 139);
+  const now = new Date(today + 'T00:00:00');
+  const elapsed = Math.round((now - sd) / 86400000);
+  const weekEnds = [4, 8, 12, 16, 20];
+  const tlStages = stages.map((st, idx) => {
+    const we = weekEnds[idx]; const ws = we - 3;
+    const sBegin = new Date(sd); sBegin.setDate(sBegin.getDate() + (ws - 1) * 7);
+    const sDeadline = new Date(sd); sDeadline.setDate(sDeadline.getDate() + we * 7 - 1);
+    const done = st.items.filter(i => i.stats.total > 0).length;
+    let status = 'upcoming';
+    if (done === st.items.length) status = 'done';
+    else if (now > sDeadline) status = 'overdue';
+    else if (now >= sBegin) status = 'active';
+    return { id: st.id, start: sBegin.toISOString().slice(0, 10), deadline: sDeadline.toISOString().slice(0, 10), status, itemsDone: done, itemsTotal: st.items.length };
+  });
+  return {
+    today, stages,
+    global: { todayDone, todayTotal: totalItems, totalRecords, activeDays: allDates.size, streak, firstDate: allDates.size ? [...allDates].sort()[0] : null, daily },
+    timeline: { start: startDate, end: ed.toISOString().slice(0, 10), elapsedDays: Math.max(0, elapsed), totalDays: 140, currentWeek: Math.max(1, Math.min(20, Math.floor(elapsed / 7) + 1)), remainingDays: Math.max(0, 140 - Math.max(0, elapsed)), stages: tlStages }
+  };
+}
+
+function saveToLS(data) {
+  const checkins = {};
+  data.stages.forEach(s => s.items.forEach(i => { if (i.stats.dates.length) checkins[i.id] = i.stats.dates; }));
+  localStorage.setItem(LS_KEY, JSON.stringify({ startDate: data.timeline.start, checkins }));
+}
+function loadFromLS() {
+  try { return JSON.parse(localStorage.getItem(LS_KEY)) || {}; } catch (e) { return {}; }
+}
+
+function buildDataFromState(state) {
+  const today = new Date().toISOString().slice(0, 10);
+  const checkins = state.checkins || {};
+  const startDate = state.startDate || today;
+  const stages = STAGES_DATA.map(st => ({
+    ...st,
+    items: st.items.map(it => {
+      const dates = checkins[it.id] || [];
+      const dateSet = new Set(dates);
+      const todayDone = dateSet.has(today);
+      const total = dates.length;
+      let streak = 0;
+      let d = new Date(today + 'T00:00:00');
+      if (!todayDone) d.setDate(d.getDate() - 1);
+      while (dateSet.has(d.toISOString().slice(0, 10))) { streak++; d.setDate(d.getDate() - 1); }
+      return {
+        id: it.id, name: it.name, detail: it.detail, badge: it.badge,
+        links: it.links || [],
+        stats: { total, streak, last: dates.length ? dates[dates.length - 1] : null, today: todayDone, dates }
+      };
+    })
+  }));
+  const totalItems = stages.reduce((a, s) => a + s.items.length, 0);
+  const todayDone = stages.reduce((a, s) => a + s.items.filter(i => i.stats.today).length, 0);
+  const allDates = new Set();
+  let totalRecords = 0;
+  stages.forEach(s => s.items.forEach(i => { i.stats.dates.forEach(d => allDates.add(d)); totalRecords += i.stats.total; }));
+  let streak = 0;
+  { let d = new Date(today + 'T00:00:00');
+    if (!allDates.has(today)) d.setDate(d.getDate() - 1);
+    while (allDates.has(d.toISOString().slice(0, 10))) { streak++; d.setDate(d.getDate() - 1); }
+  }
+  const daily = [];
+  for (let i = 27; i >= 0; i--) {
+    const d = new Date(today + 'T00:00:00');
+    d.setDate(d.getDate() - i);
+    const ds = d.toISOString().slice(0, 10);
+    let count = 0;
+    stages.forEach(s => s.items.forEach(it => { if (it.stats.dates.includes(ds)) count++; }));
+    daily.push({ date: ds, count });
+  }
+  const sd = new Date(startDate + 'T00:00:00');
+  const ed = new Date(sd); ed.setDate(ed.getDate() + 139);
+  const now = new Date(today + 'T00:00:00');
+  const elapsed = Math.round((now - sd) / 86400000);
+  const weekEnds = [4, 8, 12, 16, 20];
+  const tlStages = stages.map((st, idx) => {
+    const we = weekEnds[idx]; const ws = we - 3;
+    const sBegin = new Date(sd); sBegin.setDate(sBegin.getDate() + (ws - 1) * 7);
+    const sDeadline = new Date(sd); sDeadline.setDate(sDeadline.getDate() + we * 7 - 1);
+    const done = st.items.filter(i => i.stats.total > 0).length;
+    let status = 'upcoming';
+    if (done === st.items.length) status = 'done';
+    else if (now > sDeadline) status = 'overdue';
+    else if (now >= sBegin) status = 'active';
+    return { id: st.id, start: sBegin.toISOString().slice(0, 10), deadline: sDeadline.toISOString().slice(0, 10), status, itemsDone: done, itemsTotal: st.items.length };
+  });
+  return {
+    today, stages,
+    global: { todayDone, todayTotal: totalItems, totalRecords, activeDays: allDates.size, streak, firstDate: allDates.size ? [...allDates].sort()[0] : null, daily },
+    timeline: { start: startDate, end: ed.toISOString().slice(0, 10), elapsedDays: Math.max(0, elapsed), totalDays: 140, currentWeek: Math.max(1, Math.min(20, Math.floor(elapsed / 7) + 1)), remainingDays: Math.max(0, 140 - Math.max(0, elapsed)), stages: tlStages }
+  };
+}
+
+function buildGhState(data) {
+  const checkins = {};
+  data.stages.forEach(s => s.items.forEach(i => { if (i.stats.dates.length) checkins[i.id] = [...i.stats.dates]; }));
+  return {
+    startDate: data.timeline.start,
+    checkins,
+    sessions: sessionsData.map(s => ({ start: s.start, end: s.end, duration: s.duration }))
+  };
 }
 
 function render() {
@@ -242,6 +548,21 @@ function renderSidebar() {
 
 /* ============ 打卡操作 ============ */
 async function toggleCheck(id, date, x, y) {
+  if (OFFLINE || !navigator.onLine) {
+    const saved = loadFromLS();
+    if (!saved.checkins) saved.checkins = {};
+    if (!saved.checkins[id]) saved.checkins[id] = [];
+    const idx = saved.checkins[id].indexOf(date);
+    const checked = idx < 0;
+    if (checked) saved.checkins[id].push(date);
+    else saved.checkins[id].splice(idx, 1);
+    saved.checkins[id].sort();
+    localStorage.setItem(LS_KEY, JSON.stringify(saved));
+    if (checked && x != null) confettiAt(x, y);
+    await load();
+    toast(checked ? `${pick(TOASTS)} 打卡已保存到浏览器` : `已取消 ${date} 的打卡`);
+    return;
+  }
   try {
     const r = await fetch(`/api/toggle?item=${encodeURIComponent(id)}&date=${date}`, { method: 'POST' });
     const j = await r.json();
@@ -253,7 +574,7 @@ async function toggleCheck(id, date, x, y) {
       const extra = it && it.stats.streak > 1 ? `已连续 ${it.stats.streak} 天 🔥` : '好的开始 ✨';
       toast(`${pick(TOASTS)} ${extra}`);
     } else { toast(`已取消 ${date} 的打卡`); }
-  } catch (e) { toast('网络异常，请确认服务已启动'); }
+  } catch (e) { toast('网络异常'); }
 }
 
 /* ============ 弹窗 ============ */
@@ -345,15 +666,13 @@ function toast(msg) { const t = $('#toast'); t.textContent = msg; t.hidden = fal
 
 /* ============ 导出 / 导入 ============ */
 function exportData() {
-  fetch('/api/export').then(r => r.json()).then(d => {
-    const blob = new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `学习打卡备份_${DATA.today}.json`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-    toast('📤 备份已下载');
-  }).catch(() => toast('导出失败'));
+  const blob = new Blob([JSON.stringify(DATA, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `学习打卡备份_${DATA.today}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('📤 备份已下载');
 }
 
 function importData(file) {
@@ -464,6 +783,12 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#modal
 // 开始日期
 $('#startDateInput').addEventListener('change', async e => {
   const v = e.target.value; if (!v) return;
+  if (OFFLINE || !navigator.onLine) {
+    const saved = loadFromLS(); saved.startDate = v;
+    localStorage.setItem(LS_KEY, JSON.stringify(saved));
+    if (ghReady) await ghSave(buildGhState(DATA));
+    toast('开始日期已更新 🗓️' + (ghReady ? ' 已同步到 GitHub' : '')); await load(); return;
+  }
   const r = await fetch(`/api/config?startDate=${v}`, { method: 'POST' });
   const j = await r.json();
   if (!j.ok) { toast(j.msg || '保存失败'); return; }
@@ -509,6 +834,7 @@ $('#pomoReset').addEventListener('click', () => {
 $('#exportBtn').addEventListener('click', exportData);
 $('#importBtn').addEventListener('click', () => $('#importFile').click());
 $('#importFile').addEventListener('change', e => { if (e.target.files[0]) importData(e.target.files[0]); e.target.value = ''; });
+$('#tokenBtn').addEventListener('click', showTokenModal);
 
 // IntersectionObserver 自动高亮侧边栏
 const sbObserver = new IntersectionObserver(entries => {
@@ -565,10 +891,17 @@ async function timerStop() {
   const startIso = new Date(timerStartMs).toISOString().slice(0, 19);
   const endIso = new Date(endMs).toISOString().slice(0, 19);
   // 保存到后端
-  await fetch('/api/sessions/add', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ start: startIso, end: endIso, duration: durationSec })
-  });
+  if (!OFFLINE) {
+    await fetch('/api/sessions/add', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ start: startIso, end: endIso, duration: durationSec })
+    });
+  }
+  // 同步到 GitHub
+  if (ghReady) {
+    sessionsData.push({ start: startIso, end: endIso, duration: durationSec });
+    await ghSave(buildGhState(DATA));
+  }
   $('#timerStart').disabled = false;
   $('#timerStop').disabled = true;
   $('#timerLabel').textContent = `已记录 ${Math.floor(durationSec/60)} 分 ${durationSec%60} 秒`;
@@ -580,10 +913,25 @@ async function timerStop() {
 
 async function loadSessions() {
   try {
-    const r = await fetch('/api/sessions');
-    const d = await r.json();
-    sessionsData = d.sessions || [];
-    dailyDurations = d.daily || [];
+    if (!OFFLINE) {
+      const r = await fetch('/api/sessions');
+      const d = await r.json();
+      sessionsData = d.sessions || [];
+      dailyDurations = d.daily || [];
+    } else if (ghReady && DATA) {
+      // 从 GitHub state 中读取 sessions
+      const ghState = await ghRead();
+      sessionsData = (ghState && ghState.state && ghState.state.sessions) || [];
+      // 按天聚合
+      const daily = {};
+      sessionsData.forEach(s => {
+        const day = s.start.slice(0, 10);
+        daily[day] = (daily[day] || 0) + s.duration;
+      });
+      dailyDurations = Object.entries(daily).map(([date, seconds]) => ({ date, seconds }));
+    } else {
+      sessionsData = []; dailyDurations = [];
+    }
   } catch (e) { sessionsData = []; dailyDurations = []; }
   // 计算今日学习总时长
   const today = DATA?.today || new Date().toISOString().slice(0, 10);

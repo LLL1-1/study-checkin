@@ -184,21 +184,14 @@ function badgeCls(b) {
 /* ============ 数据加载 ============ */
 async function load() {
   if (OFFLINE) {
-    // GitHub Pages：优先用 GitHub 后端
-    const ghState = await ghLoad();
-    if (ghState) {
-      DATA = buildDataFromState(ghState);
-    } else {
-      DATA = buildOfflineData();
-    }
-    saveToLS(DATA);
+    // GitHub Pages 离线模式：直接用 localStorage
+    DATA = buildOfflineData();
   } else {
     try {
       const r = await fetch('/api/data');
       DATA = await r.json();
     } catch (e) {
       DATA = buildOfflineData();
-      saveToLS(DATA);
     }
   }
   stageById = {}; itemById = {}; itemStage = {}; colorById = {}; tlStageById = {};
@@ -567,9 +560,7 @@ async function toggleCheck(id, date, x, y) {
     localStorage.setItem(LS_KEY, JSON.stringify(saved));
     if (checked && x != null) confettiAt(x, y);
     await load();
-    // 同步到 GitHub
-    if (ghReady) await ghSave(buildGhState(DATA));
-    toast(checked ? `${pick(TOASTS)}${ghReady ? ' 数据已同步到 GitHub' : ' 打卡已保存到浏览器'}` : `已取消 ${date} 的打卡`);
+    toast(checked ? `${pick(TOASTS)} 打卡已保存到浏览器` : `已取消 ${date} 的打卡`);
     return;
   }
   try {
