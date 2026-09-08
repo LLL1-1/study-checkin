@@ -1,4 +1,7 @@
-data/
+data/checkins.csv
+data/config.csv
+data/sessions.csv
+data/*.tmp
 bin/
 *.class
 server.log

@@ -10,6 +10,110 @@ const LS_KEY = 'study_checkin_data';
 const $ = s => document.querySelector(s);
 const RING_C = 326.7;
 
+/* ============ GitHub 后端 ============ */
+const GH_OWNER = 'LLL1-1', GH_REPO = 'study-checkin', GH_FILE = 'data/state.json';
+let ghToken = localStorage.getItem('gh_token') || '';
+let ghReady = false;
+
+function getGhToken() { return ghToken; }
+function setGhToken(t) { ghToken = t; localStorage.setItem('gh_token', t); }
+function clearGhToken() { ghToken = ''; localStorage.removeItem('gh_token'); }
+
+async function ghRead() {
+  const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${GH_FILE}`;
+  const headers = { 'Accept': 'application/vnd.github.v3+json' };
+  if (ghToken) headers['Authorization'] = 'token ' + ghToken;
+  const r = await fetch(url, { headers });
+  if (!r.ok) throw new Error('GitHub read failed: ' + r.status);
+  const j = await r.json();
+  const content = atob(j.content.replace(/\n/g, ''));
+  return { state: JSON.parse(content), sha: j.sha };
+}
+
+async function ghWrite(state, sha, msg) {
+  const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${GH_FILE}`;
+  const body = { message: msg, content: btoa(unescape(encodeURIComponent(JSON.stringify(state, null, 2)))), sha };
+  if (ghToken) body.branch = 'main';
+  const r = await fetch(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'token ' + ghToken },
+    body: JSON.stringify(body)
+  });
+  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.message || r.status); }
+  return (await r.json()).content.sha;
+}
+
+async function ghLoad() {
+  if (!ghToken) return null;
+  try {
+    const { state, sha } = await ghRead();
+    ghReady = true;
+    localStorage.setItem('gh_sha', sha);
+    return state;
+  } catch (e) {
+    console.warn('[GitHub] 读取失败:', e.message);
+    if (e.message.includes('401') || e.message.includes('403')) {
+      toast('⚠️ Token 无效或已过期，请重新配置'); clearGhToken();
+    }
+    return null;
+  }
+}
+
+async function ghSave(state) {
+  if (!ghReady || !ghToken) return;
+  try {
+    const sha = localStorage.getItem('gh_sha') || '';
+    const newSha = await ghWrite(state, sha, '📊 更新打卡数据 ' + new Date().toISOString().slice(0, 16));
+    localStorage.setItem('gh_sha', newSha);
+  } catch (e) {
+    console.warn('[GitHub] 保存失败:', e.message);
+    toast('⚠️ 数据同步失败: ' + e.message);
+  }
+}
+
+/* ============ Token 配置弹窗 ============ */
+function showTokenModal() {
+  const mask = document.createElement('div');
+  mask.className = 'modal-mask'; mask.id = 'tokenMask';
+  mask.innerHTML = `<div class="modal" style="max-width:440px;padding:24px">
+    <h3 style="margin:0 0 12px">🔑 配置 GitHub Token</h3>
+    <p style="font-size:13px;color:var(--muted);margin:0 0 12px">
+      配置后打卡数据将保存到 GitHub，跨设备同步不丢失。<br>
+      <b>生成 Token：</b>GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token<br>
+      勾选 <code>repo</code> 权限，复制生成的 Token 粘贴到下方。
+    </p>
+    <input id="tokenInput" type="password" placeholder="ghp_xxxxxxxxxxxx"
+      style="width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;box-sizing:border-box"
+      value="${ghToken}">
+    <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end">
+      <button class="io-btn" id="tokenClear" ${!ghToken ? 'style="display:none"' : ''}>清除 Token</button>
+      <button class="io-btn" id="tokenCancel">取消</button>
+      <button class="io-btn primary" id="tokenSave">保存</button>
+    </div>
+    <div id="tokenMsg" style="font-size:12px;margin-top:8px;color:var(--green)"></div>
+  </div>`;
+  document.body.appendChild(mask);
+  document.body.style.overflow = 'hidden';
+  const close = () => { mask.remove(); document.body.style.overflow = ''; };
+  mask.addEventListener('click', e => { if (e.target === mask) close(); });
+  document.getElementById('tokenCancel').onclick = close;
+  document.getElementById('tokenClear').onclick = () => { clearGhToken(); toast('Token 已清除'); close(); load(); };
+  document.getElementById('tokenSave').onclick = async () => {
+    const v = document.getElementById('tokenInput').value.trim();
+    if (!v) { toast('请输入 Token'); return; }
+    setGhToken(v);
+    document.getElementById('tokenMsg').textContent = '验证中...';
+    const state = await ghLoad();
+    if (state) {
+      document.getElementById('tokenMsg').textContent = '✅ 验证成功，数据已同步！';
+      setTimeout(() => { close(); load(); }, 800);
+    } else {
+      document.getElementById('tokenMsg').textContent = '❌ Token 无效或仓库权限不足';
+      document.getElementById('tokenMsg').style.color = '#dc3545';
+    }
+  };
+}
+
 // 内嵌路线图数据（离线模式用）
 const STAGES_DATA = [
   {id:"s1",name:"Java 基础巩固",weeks:"第 1~4 周",icon:"🌱",color:"#5B8DEF",goal:"基础语法熟练，GitHub 有持续提交记录",items:[
@@ -80,15 +184,19 @@ function badgeCls(b) {
 /* ============ 数据加载 ============ */
 async function load() {
   if (OFFLINE) {
-    // GitHub Pages 离线模式：使用内嵌数据 + localStorage
-    DATA = buildOfflineData();
+    // GitHub Pages：优先用 GitHub 后端
+    const ghState = await ghLoad();
+    if (ghState) {
+      DATA = buildDataFromState(ghState);
+    } else {
+      DATA = buildOfflineData();
+    }
     saveToLS(DATA);
   } else {
     try {
       const r = await fetch('/api/data');
       DATA = await r.json();
     } catch (e) {
-      // 后端不可用时降级为离线模式
       DATA = buildOfflineData();
       saveToLS(DATA);
     }
@@ -176,6 +284,80 @@ function saveToLS(data) {
 }
 function loadFromLS() {
   try { return JSON.parse(localStorage.getItem(LS_KEY)) || {}; } catch (e) { return {}; }
+}
+
+function buildDataFromState(state) {
+  const today = new Date().toISOString().slice(0, 10);
+  const checkins = state.checkins || {};
+  const startDate = state.startDate || today;
+  const stages = STAGES_DATA.map(st => ({
+    ...st,
+    items: st.items.map(it => {
+      const dates = checkins[it.id] || [];
+      const dateSet = new Set(dates);
+      const todayDone = dateSet.has(today);
+      const total = dates.length;
+      let streak = 0;
+      let d = new Date(today + 'T00:00:00');
+      if (!todayDone) d.setDate(d.getDate() - 1);
+      while (dateSet.has(d.toISOString().slice(0, 10))) { streak++; d.setDate(d.getDate() - 1); }
+      return {
+        id: it.id, name: it.name, detail: it.detail, badge: it.badge,
+        links: it.links || [],
+        stats: { total, streak, last: dates.length ? dates[dates.length - 1] : null, today: todayDone, dates }
+      };
+    })
+  }));
+  const totalItems = stages.reduce((a, s) => a + s.items.length, 0);
+  const todayDone = stages.reduce((a, s) => a + s.items.filter(i => i.stats.today).length, 0);
+  const allDates = new Set();
+  let totalRecords = 0;
+  stages.forEach(s => s.items.forEach(i => { i.stats.dates.forEach(d => allDates.add(d)); totalRecords += i.stats.total; }));
+  let streak = 0;
+  { let d = new Date(today + 'T00:00:00');
+    if (!allDates.has(today)) d.setDate(d.getDate() - 1);
+    while (allDates.has(d.toISOString().slice(0, 10))) { streak++; d.setDate(d.getDate() - 1); }
+  }
+  const daily = [];
+  for (let i = 27; i >= 0; i--) {
+    const d = new Date(today + 'T00:00:00');
+    d.setDate(d.getDate() - i);
+    const ds = d.toISOString().slice(0, 10);
+    let count = 0;
+    stages.forEach(s => s.items.forEach(it => { if (it.stats.dates.includes(ds)) count++; }));
+    daily.push({ date: ds, count });
+  }
+  const sd = new Date(startDate + 'T00:00:00');
+  const ed = new Date(sd); ed.setDate(ed.getDate() + 139);
+  const now = new Date(today + 'T00:00:00');
+  const elapsed = Math.round((now - sd) / 86400000);
+  const weekEnds = [4, 8, 12, 16, 20];
+  const tlStages = stages.map((st, idx) => {
+    const we = weekEnds[idx]; const ws = we - 3;
+    const sBegin = new Date(sd); sBegin.setDate(sBegin.getDate() + (ws - 1) * 7);
+    const sDeadline = new Date(sd); sDeadline.setDate(sDeadline.getDate() + we * 7 - 1);
+    const done = st.items.filter(i => i.stats.total > 0).length;
+    let status = 'upcoming';
+    if (done === st.items.length) status = 'done';
+    else if (now > sDeadline) status = 'overdue';
+    else if (now >= sBegin) status = 'active';
+    return { id: st.id, start: sBegin.toISOString().slice(0, 10), deadline: sDeadline.toISOString().slice(0, 10), status, itemsDone: done, itemsTotal: st.items.length };
+  });
+  return {
+    today, stages,
+    global: { todayDone, todayTotal: totalItems, totalRecords, activeDays: allDates.size, streak, firstDate: allDates.size ? [...allDates].sort()[0] : null, daily },
+    timeline: { start: startDate, end: ed.toISOString().slice(0, 10), elapsedDays: Math.max(0, elapsed), totalDays: 140, currentWeek: Math.max(1, Math.min(20, Math.floor(elapsed / 7) + 1)), remainingDays: Math.max(0, 140 - Math.max(0, elapsed)), stages: tlStages }
+  };
+}
+
+function buildGhState(data) {
+  const checkins = {};
+  data.stages.forEach(s => s.items.forEach(i => { if (i.stats.dates.length) checkins[i.id] = [...i.stats.dates]; }));
+  return {
+    startDate: data.timeline.start,
+    checkins,
+    sessions: sessionsData.map(s => ({ start: s.start, end: s.end, duration: s.duration }))
+  };
 }
 
 function render() {
@@ -374,7 +556,6 @@ function renderSidebar() {
 /* ============ 打卡操作 ============ */
 async function toggleCheck(id, date, x, y) {
   if (OFFLINE || !navigator.onLine) {
-    // 离线模式：用 localStorage
     const saved = loadFromLS();
     if (!saved.checkins) saved.checkins = {};
     if (!saved.checkins[id]) saved.checkins[id] = [];
@@ -386,7 +567,9 @@ async function toggleCheck(id, date, x, y) {
     localStorage.setItem(LS_KEY, JSON.stringify(saved));
     if (checked && x != null) confettiAt(x, y);
     await load();
-    toast(checked ? `${pick(TOASTS)} 打卡已保存到浏览器` : `已取消 ${date} 的打卡`);
+    // 同步到 GitHub
+    if (ghReady) await ghSave(buildGhState(DATA));
+    toast(checked ? `${pick(TOASTS)}${ghReady ? ' 数据已同步到 GitHub' : ' 打卡已保存到浏览器'}` : `已取消 ${date} 的打卡`);
     return;
   }
   try {
@@ -612,7 +795,8 @@ $('#startDateInput').addEventListener('change', async e => {
   if (OFFLINE || !navigator.onLine) {
     const saved = loadFromLS(); saved.startDate = v;
     localStorage.setItem(LS_KEY, JSON.stringify(saved));
-    toast('开始日期已更新 🗓️'); await load(); return;
+    if (ghReady) await ghSave(buildGhState(DATA));
+    toast('开始日期已更新 🗓️' + (ghReady ? ' 已同步到 GitHub' : '')); await load(); return;
   }
   const r = await fetch(`/api/config?startDate=${v}`, { method: 'POST' });
   const j = await r.json();
@@ -659,6 +843,7 @@ $('#pomoReset').addEventListener('click', () => {
 $('#exportBtn').addEventListener('click', exportData);
 $('#importBtn').addEventListener('click', () => $('#importFile').click());
 $('#importFile').addEventListener('change', e => { if (e.target.files[0]) importData(e.target.files[0]); e.target.value = ''; });
+$('#tokenBtn').addEventListener('click', showTokenModal);
 
 // IntersectionObserver 自动高亮侧边栏
 const sbObserver = new IntersectionObserver(entries => {
@@ -715,10 +900,17 @@ async function timerStop() {
   const startIso = new Date(timerStartMs).toISOString().slice(0, 19);
   const endIso = new Date(endMs).toISOString().slice(0, 19);
   // 保存到后端
-  await fetch('/api/sessions/add', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ start: startIso, end: endIso, duration: durationSec })
-  });
+  if (!OFFLINE) {
+    await fetch('/api/sessions/add', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ start: startIso, end: endIso, duration: durationSec })
+    });
+  }
+  // 同步到 GitHub
+  if (ghReady) {
+    sessionsData.push({ start: startIso, end: endIso, duration: durationSec });
+    await ghSave(buildGhState(DATA));
+  }
   $('#timerStart').disabled = false;
   $('#timerStop').disabled = true;
   $('#timerLabel').textContent = `已记录 ${Math.floor(durationSec/60)} 分 ${durationSec%60} 秒`;
@@ -730,10 +922,25 @@ async function timerStop() {
 
 async function loadSessions() {
   try {
-    const r = await fetch('/api/sessions');
-    const d = await r.json();
-    sessionsData = d.sessions || [];
-    dailyDurations = d.daily || [];
+    if (!OFFLINE) {
+      const r = await fetch('/api/sessions');
+      const d = await r.json();
+      sessionsData = d.sessions || [];
+      dailyDurations = d.daily || [];
+    } else if (ghReady && DATA) {
+      // 从 GitHub state 中读取 sessions
+      const ghState = await ghRead();
+      sessionsData = (ghState && ghState.state && ghState.state.sessions) || [];
+      // 按天聚合
+      const daily = {};
+      sessionsData.forEach(s => {
+        const day = s.start.slice(0, 10);
+        daily[day] = (daily[day] || 0) + s.duration;
+      });
+      dailyDurations = Object.entries(daily).map(([date, seconds]) => ({ date, seconds }));
+    } else {
+      sessionsData = []; dailyDurations = [];
+    }
   } catch (e) { sessionsData = []; dailyDurations = []; }
   // 计算今日学习总时长
   const today = DATA?.today || new Date().toISOString().slice(0, 10);
