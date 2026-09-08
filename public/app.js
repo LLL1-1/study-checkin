@@ -5,6 +5,7 @@ let DATA = null;
 let cal = null;
 let stageById = {}, itemById = {}, itemStage = {}, colorById = {}, tlStageById = {};
 let collapsedStages = new Set();
+let userToggled = new Set(); // 记录用户手动操作过的阶段，自动逻辑不再覆盖
 const OFFLINE = location.hostname === '' || location.hostname === 'localhost' ? false : true;
 const LS_KEY = 'study_checkin_data';
 const $ = s => document.querySelector(s);
@@ -443,16 +444,16 @@ function renderTimeline() {
 
 /* ============ 阶段与打卡项（智能折叠） ============ */
 function renderStages() {
-  // 自动折叠：未来阶段默认折叠，已完成和进行中的展开
+  // 自动折叠：只在用户没有手动操作过的阶段上生效
   DATA.stages.forEach(st => {
     const tl = tlStageById[st.id];
     if (!tl) return;
-    // 只有用户没有手动展开过的未来阶段才自动折叠
-    if (tl.status === 'upcoming' && !collapsedStages.has('!auto_' + st.id) && !collapsedStages.has(st.id)) {
-      // upcoming 默认折叠，除非用户手动展开过
-      if (!collapsedStages.has('!visited_' + st.id)) collapsedStages.add(st.id);
+    if (userToggled.has(st.id)) return; // 用户手动操作过，跳过
+    // upcoming 默认折叠
+    if (tl.status === 'upcoming') {
+      if (!collapsedStages.has(st.id)) collapsedStages.add(st.id);
     }
-    // 已完成/进行中/逾期的阶段自动展开
+    // 已完成/进行中/逾期的阶段默认展开
     if (tl.status === 'done' || tl.status === 'active' || tl.status === 'overdue') {
       collapsedStages.delete(st.id);
     }
@@ -698,20 +699,18 @@ document.addEventListener('click', e => {
   const sbStage = e.target.closest('[data-sb-stage]');
   if (sbStage) {
     const id = sbStage.dataset.sbStage;
+    userToggled.add(id); // 标记用户手动操作
     if (collapsedStages.has(id)) collapsedStages.delete(id); else collapsedStages.add(id);
-    // 取消自动折叠标记，防止再次自动折叠
-    collapsedStages.delete('!auto_' + id);
-    collapsedStages.add('!visited_' + id);
     renderStages(); renderSidebar();
-    // 滚动到该阶段
     const el = document.querySelector(`.stage[data-stage="${id}"]`);
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
     return;
   }
-  // 侧边栏：点击阶段标题折叠/展开（主区域）
+  // 主区域：点击阶段标题折叠/展开
   const toggleStage = e.target.closest('[data-toggle-stage]');
   if (toggleStage) {
     const id = toggleStage.dataset.toggleStage;
+    userToggled.add(id); // 标记用户手动操作
     if (collapsedStages.has(id)) collapsedStages.delete(id); else collapsedStages.add(id);
     renderStages(); renderSidebar();
     return;
@@ -834,7 +833,6 @@ $('#pomoReset').addEventListener('click', () => {
 $('#exportBtn').addEventListener('click', exportData);
 $('#importBtn').addEventListener('click', () => $('#importFile').click());
 $('#importFile').addEventListener('change', e => { if (e.target.files[0]) importData(e.target.files[0]); e.target.value = ''; });
-$('#tokenBtn').addEventListener('click', showTokenModal);
 
 // IntersectionObserver 自动高亮侧边栏
 const sbObserver = new IntersectionObserver(entries => {
@@ -859,8 +857,9 @@ function setupScrollSpy() {
   sections.forEach(s => { if (s.el) { s.el.dataset.navSection = s.id; sbObserver.observe(s.el); } });
 }
 
-/* ============ 学习计时器 ============ */
-let timerInterval = null, timerRunning = false, timerStartMs = null, timerElapsed = 0;
+/* ============ 学习计时器（刷新不丢失） ============ */
+let timerInterval = null, timerRunning = false, timerStartMs = null;
+const TIMER_KEY = 'study_timer_active';
 let sessionsData = [], dailyDurations = [];
 let chartMonth = new Date(DATA?.today || Date.now());
 chartMonth.setDate(1);
@@ -872,13 +871,33 @@ function timerTick() {
   $('#timerDisplay').textContent = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
 }
 
+// 页面加载时自动恢复计时器
+function timerResumeIfActive() {
+  const saved = localStorage.getItem(TIMER_KEY);
+  if (saved) {
+    try {
+      const obj = JSON.parse(saved);
+      if (obj.startMs && obj.startMs > 0) {
+        timerStartMs = obj.startMs;
+        timerRunning = true;
+        $('#timerStart').disabled = true;
+        $('#timerStop').disabled = false;
+        $('#timerLabel').textContent = '学习中（刷新后自动恢复）…';
+        timerInterval = setInterval(timerTick, 1000);
+        timerTick();
+      }
+    } catch(e) {}
+  }
+}
+
 async function timerStart() {
   if (timerRunning) return;
   timerStartMs = Date.now();
   timerRunning = true;
+  localStorage.setItem(TIMER_KEY, JSON.stringify({ startMs: timerStartMs }));
   $('#timerStart').disabled = true;
   $('#timerStop').disabled = false;
-  $('#timerLabel').textContent = '学习中...';
+  $('#timerLabel').textContent = '学习中…';
   timerInterval = setInterval(timerTick, 1000);
 }
 
@@ -886,21 +905,18 @@ async function timerStop() {
   if (!timerRunning) return;
   clearInterval(timerInterval);
   timerRunning = false;
+  localStorage.removeItem(TIMER_KEY);
   const endMs = Date.now();
   const durationSec = Math.floor((endMs - timerStartMs) / 1000);
   const startIso = new Date(timerStartMs).toISOString().slice(0, 19);
   const endIso = new Date(endMs).toISOString().slice(0, 19);
-  // 保存到后端
   if (!OFFLINE) {
-    await fetch('/api/sessions/add', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ start: startIso, end: endIso, duration: durationSec })
-    });
-  }
-  // 同步到 GitHub
-  if (ghReady) {
-    sessionsData.push({ start: startIso, end: endIso, duration: durationSec });
-    await ghSave(buildGhState(DATA));
+    try {
+      await fetch('/api/sessions/add', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ start: startIso, end: endIso, duration: durationSec })
+      });
+    } catch(e) {}
   }
   $('#timerStart').disabled = false;
   $('#timerStop').disabled = true;
@@ -910,6 +926,20 @@ async function timerStop() {
   await loadSessions();
   renderCharts();
 }
+
+// 页面关闭时自动保存学习时长
+window.addEventListener('beforeunload', () => {
+  if (timerRunning && timerStartMs) {
+    const endMs = Date.now();
+    const durationSec = Math.floor((endMs - timerStartMs) / 1000);
+    const startIso = new Date(timerStartMs).toISOString().slice(0, 19);
+    const endIso = new Date(endMs).toISOString().slice(0, 19);
+    if (!OFFLINE) {
+      navigator.sendBeacon('/api/sessions/add', new Blob([JSON.stringify({ start: startIso, end: endIso, duration: durationSec })], { type: 'application/json' }));
+    }
+    localStorage.removeItem(TIMER_KEY);
+  }
+});
 
 async function loadSessions() {
   try {
@@ -1136,4 +1166,5 @@ window.addEventListener('resize', () => { if (sessionsData.length) renderCharts(
 load().then(() => {
   setupScrollSpy();
   loadSessions().then(renderCharts);
+  timerResumeIfActive();
 });
